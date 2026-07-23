@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import csv
@@ -10,10 +9,10 @@ import io
 import re
 import unicodedata
 
-st.set_page_config(page_title="【ユーザー提案版】レシート自動仕分け", page_icon="🐻", layout="wide")
+st.set_page_config(page_title="【完全対応版】レシート自動仕分け", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("【合計金額狙い撃ち】最も確実なルールで、正確に仕分けを行います。🐾")
+st.markdown("【Amex完全対応】タイトル行を自動スキップし、正確に仕分けを行います。🐾")
 st.divider()
 
 CARD_KEYWORDS = ["クレジット", "visa", "mastercard", "jcb", "amex", "ｸﾚｼﾞｯﾄ", "一括", "お客様控え", "クレ電子", "アメリカン", "カード売"]
@@ -31,35 +30,27 @@ def normalize_for_match(text):
     return re.sub(r'\s+', '', norm)
 
 def is_shop_match(csv_shop, receipt_text):
-    """店名チェック（厳しすぎないように最初の2文字だけでふんわり確認）"""
-    if not csv_shop or csv_shop == '不明': return True # 不明な場合は金額だけで通す
+    if not csv_shop or csv_shop == '不明': return True 
     
     shop_norm = normalize_for_match(csv_shop)
     receipt_norm = normalize_for_match(receipt_text)
     clean_shop = re.sub(r'(カ\)|株\)|\(カ\)|\(株\)|カブシキガイシャ|株式会社|合同会社)', '', shop_norm)
     
-    # 最初の2文字だけを抽出（JRなど短いものに対応）
     keyword = clean_shop[:2] if len(clean_shop) >= 2 else clean_shop
-    
     if keyword and keyword in receipt_norm:
         return True
     return False
 
 def get_monetary_amounts(text):
-    """【ユーザー様提案！】「合計」などの右側にある数字をピンポイントで狙い撃ち！"""
     amounts = set()
-    
-    # 提案ロジック：「合計」「計」「お買上額」などのすぐ右側にある数字を抽出！
-    # 例："合計 ¥ 6,545" や "計 6545円" から "6545" を抜き出す魔法
     matches = re.findall(r'(?:合計|計|お買上額|お支払総額|請求額|金額)[^\d]*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
     
-    # 保険ロジック：単独の ¥ や 円 も一応拾う
     matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
+    
     matches = re.findall(r'([0-9,]+)\s*円', text)
     for m in matches: amounts.add(m.replace(',', ''))
-    
     return amounts
 
 def extract_purchased_items(text):
@@ -129,18 +120,25 @@ if st.button("🐾 改良版ロジックで仕分けを開始！", use_container
                     for csv_file in csv_files:
                         folder_name = f"{os.path.splitext(csv_file.name)[0]}"
                         try:
-                            # 【修正】文字化け対策：UTF-8とShift-JISの両方に対応！
                             content = csv_file.getvalue()
                             try:
-                                decoded_file = content.decode('utf-8-sig').splitlines()
+                                decoded_lines = content.decode('utf-8-sig').splitlines()
                             except UnicodeDecodeError:
-                                decoded_file = content.decode('shift_jis').splitlines()
-                                
-                            reader = csv.DictReader(decoded_file)
+                                decoded_lines = content.decode('shift_jis').splitlines()
+                            
+                            # 【修正】アメックス特有のタイトル行をスキップし、ヘッダー位置を自動検知
+                            header_idx = 0
+                            for i, line in enumerate(decoded_lines):
+                                if '金額' in line or '利用' in line or '摘要' in line or '明細' in line or '店名' in line:
+                                    header_idx = i
+                                    break
+                                    
+                            reader = csv.DictReader(decoded_lines[header_idx:])
                             for row in reader:
-                                amount_key = next((k for k in row.keys() if k and '金額' in k), None)
-                                date_key = next((k for k in row.keys() if k and '日' in k), None)
-                                shop_key = next((k for k in row.keys() if k and '摘要' in k), None)
+                                # アメックスの「ご利用明細」や「ご利用金額(円)」を確実にキャッチ
+                                amount_key = next((k for k in row.keys() if k and ('金額' in k or '利用額' in k)), None)
+                                date_key = next((k for k in row.keys() if k and ('日' in k or '月' in k)), None)
+                                shop_key = next((k for k in row.keys() if k and ('摘要' in k or '明細' in k or '店名' in k)), None)
                                 
                                 if amount_key and row.get(amount_key):
                                     amount_str = row[amount_key].replace(',', '').strip()
@@ -170,7 +168,6 @@ if st.button("🐾 改良版ロジックで仕分けを開始！", use_container
                                 text = extracted if extracted else ""
                                 text_norm = text.lower().replace(" ", "").replace(" ", "")
                                 
-                                # あなたの提案ロジックで金額を抽出！
                                 receipt_amounts = get_monetary_amounts(text)
                                 
                                 matched_card = None
@@ -179,7 +176,6 @@ if st.button("🐾 改良版ロジックで仕分けを開始！", use_container
                                 for item in statements:
                                     if not item['matched']:
                                         if item['amount'] in receipt_amounts:
-                                            # 店名チェックはふんわり（2文字）にして未照合行きを減らす
                                             if is_shop_match(item['shop'], text):
                                                 item['matched'] = True
                                                 matched_card = item['card_name']
@@ -257,7 +253,7 @@ if st.button("🐾 改良版ロジックで仕分けを開始！", use_container
                             arcname = os.path.relpath(file_path, output_dir)
                             zipf.write(file_path, arcname)
 
-                st.success("🐰 改良版ロジックでの処理が完了しました！")
+                st.success("🐰 Amex完全対応ロジックでの処理が完了しました！")
                 
                 st.subheader("📊 照合サマリー（結果報告）")
                 col1, col2, col3 = st.columns(3)
