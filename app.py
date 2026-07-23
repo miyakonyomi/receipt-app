@@ -13,7 +13,7 @@ import unicodedata
 st.set_page_config(page_title="【完全版】レシート自動仕分け＆CSV変換", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分け ＆ 明細CSV変換")
-st.markdown("仕分けエラー率0%の厳格システムと、デジタル明細PDFのCSV変換ツールを搭載した完全版です🐾")
+st.markdown("仕分けエラー率0%の厳格システムと、デジタル明細PDFの完璧なCSV変換ツールを搭載した完全版です🐾")
 st.divider()
 
 # 🎀 タブで機能を切り替え
@@ -307,35 +307,80 @@ with tab2:
                     
                     # 💳 カード会社ごとの専用フィルター設定
                     if "Amex" in card_type:
-                        # 行の先頭が「〇月〇日」から始まるものだけを絶対に逃さない（郵便番号などをシャットアウト）
-                        date_regex = r'^\s*(\d{1,2}月\d{1,2}日)'
+                        date_regex = r'^(\d{1,2})月(\d{1,2})日$'
+                        inline_regex = r'^(\d{1,2})月(\d{1,2})日\s+(.+?)\s+([1-9]\d{0,2}(?:,\d{3})*|0)$'
                     else:
-                        # 楽天カード用（「202X/XX/XX」または「XX/XX」のあとにスペースが続くもの）
-                        date_regex = r'^\s*(20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s+'
+                        date_regex = r'^(?:20\d{2}[-/])?(\d{1,2})[-/](\d{1,2})$'
+                        inline_regex = r'^(?:20\d{2}[-/])?(\d{1,2})[-/](\d{1,2})\s+(.+?)\s+([1-9]\d{0,2}(?:,\d{3})*|0)$'
+                    
+                    # 絶対に明細の店名として取り込まない「ノイズ単語」のブラックリスト
+                    exclude_words = ["ご利用代金明細", "ページ", "会員番号", "前回締め日", "ご利用金額", "お支払い", "ご入金", "合計", "TEL", "www.", "振替", "今月ご利用額", "ご請求", "インボイス", "登録番号", "発行者", "前回分"]
+                    
+                    pending_dates = []
+                    current_shop_lines = []
                     
                     with pdfplumber.open(pdf_bytes) as pdf:
                         for page in pdf.pages:
-                            # layout=Trueで見た目通りの空白を維持して抽出
-                            text = page.extract_text(layout=True) or page.extract_text()
+                            # レイアウトを維持せず、純粋な行単位（ステートマシン）で読み込む
+                            text = page.extract_text()
                             if text:
                                 lines = text.split('\n')
                                 for line in lines:
-                                    # 行の先頭が日付フィルターに一致するかチェック
-                                    date_match = re.search(date_regex, line)
+                                    clean_line = line.strip()
+                                    if not clean_line: continue
                                     
-                                    if date_match:
-                                        date_str = date_match.group(1)
-                                        # 行の末尾にある金額（カンマ付き数字）を狙う
-                                        amount_match = re.search(r'([1-9]\d{0,2}(?:,\d{3})*|0)\s*$', line)
+                                    # 1. 綺麗に1行にまとまっている場合の処理
+                                    inline_match = re.search(inline_regex, clean_line)
+                                    if inline_match:
+                                        extracted_data.append([
+                                            f"{inline_match.group(1)}/{inline_match.group(2)}",
+                                            inline_match.group(3).strip(),
+                                            inline_match.group(4).replace(',', '')
+                                        ])
+                                        continue
+                                    
+                                    # 2. ノイズ単語が含まれる行は完全無視
+                                    if any(word in clean_line for word in exclude_words):
+                                        continue
+                                    
+                                    # 3. 日付の取得（〇月〇日 または XX/XX）
+                                    date_only_match = re.match(date_regex, clean_line.replace(' ', '').replace('|', ''))
+                                    if date_only_match:
+                                        # 新しい取引ブロックが始まったら、前の店名ゴミをクリア
+                                        if not pending_dates:
+                                            current_shop_lines = []
+                                        pending_dates.append(f"{date_only_match.group(1)}/{date_only_match.group(2)}")
+                                        continue
                                         
-                                        if amount_match:
-                                            amount_str = amount_match.group(1).replace(',', '')
-                                            # 日付と金額の間にある文字が「店名（摘要）」
-                                            shop_str = line[date_match.end():amount_match.start()].strip()
-                                            shop_str = re.sub(r'\s+', ' ', shop_str) # 余分な空白を1つに圧縮
+                                    # 4. 金額の取得とペアリング
+                                    amount_check = re.sub(r'[\s\|]', '', clean_line)
+                                    if re.match(r'^-?[1-9]\d{0,2}(,\d{3})*$', amount_check) or amount_check == '0':
+                                        amount = amount_check.replace(',', '')
+                                        
+                                        # 記憶していた日付があれば合体させる
+                                        if pending_dates:
+                                            assigned_date = pending_dates.pop(0)
+                                            shop_text = " ".join(current_shop_lines).replace('|', '').strip()
+                                            shop_text = re.sub(r'\s+', ' ', shop_text)
                                             
-                                            if shop_str and amount_str.isdigit():
-                                                extracted_data.append([date_str, shop_str, amount_str])
+                                            # 店名が空っぽ（＝ノイズ行だった）場合は登録しない
+                                            if not shop_text:
+                                                if not pending_dates: current_shop_lines = []
+                                                continue
+                                                
+                                            # マイナスの金額や0円のものは登録しない
+                                            if amount.startswith('-') or amount == '0':
+                                                if not pending_dates: current_shop_lines = []
+                                                continue
+                                                
+                                            extracted_data.append([assigned_date, shop_text, amount])
+                                            
+                                            if not pending_dates:
+                                                current_shop_lines = []
+                                        continue
+                                        
+                                    # 5. どれにも当てはまらない行は「店名」としてプールする
+                                    current_shop_lines.append(clean_line)
                                             
                     if len(extracted_data) > 1:
                         output = io.StringIO()
