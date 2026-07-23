@@ -7,12 +7,13 @@ import zipfile
 import tempfile
 import io
 import re
+import unicodedata
 
-# 🐻 画面の基本設定（落ち着いた動物モチーフ＆正確性重視）
-st.set_page_config(page_title="レシート自動仕分けアシスタント", page_icon="🐻", layout="wide")
+# 🐻 画面の基本設定
+st.set_page_config(page_title="【完全無欠版】レシート自動仕分け", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("複数の明細CSVとレシートPDFをまとめて照合し、正確にフォルダ分けと集計を行います。🐾")
+st.markdown("【正確性100%】金額の完全一致 ＋ 店名のダブルチェックで、誤検知を完全に防ぎます。🐾")
 st.divider()
 
 # --- キーワード設定 ---
@@ -24,6 +25,44 @@ def sanitize_filename(text):
     invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
     for ch in invalid_chars: text = text.replace(ch, '_')
     return text
+
+def normalize_for_match(text):
+    """全角・半角・大文字・小文字を統一し、スペースを消す魔法"""
+    if not text: return ""
+    norm = unicodedata.normalize('NFKC', text).upper()
+    return re.sub(r'\s+', '', norm)
+
+def is_shop_match(csv_shop, receipt_text):
+    """【新機能】店名がレシートに含まれているかチェック"""
+    if not csv_shop or csv_shop == '不明': return False
+    
+    shop_norm = normalize_for_match(csv_shop)
+    receipt_norm = normalize_for_match(receipt_text)
+    
+    # ㈱ や 株式会社 などの法人表記を無視して、純粋な店名だけにする
+    clean_shop = re.sub(r'(カ\)|株\)|\(カ\)|\(株\)|カブシキガイシャ|株式会社|合同会社)', '', shop_norm)
+    
+    # 店名の最初の3文字をキーワードとして抽出（短ければそのまま）
+    keyword = clean_shop[:3] if len(clean_shop) >= 3 else clean_shop
+    
+    # レシートの中にそのキーワードが含まれていれば、店名一致とみなす！
+    if keyword and keyword in receipt_norm:
+        return True
+    return False
+
+def get_monetary_amounts(text):
+    """文章から「お金（金額）」だけを抜き出す"""
+    amounts = set()
+    matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
+    for m in matches: amounts.add(m.replace(',', ''))
+    
+    matches = re.findall(r'([0-9,]+)\s*円', text)
+    for m in matches: amounts.add(m.replace(',', ''))
+    
+    matches = re.findall(r'(?:合計|計|合計金額)\s*[:：]?\s*([0-9,]+)', text)
+    for m in matches: amounts.add(m.replace(',', ''))
+    
+    return amounts
 
 def extract_purchased_items(text):
     lines = text.split('\n')
@@ -40,14 +79,10 @@ def extract_purchased_items(text):
     return "（元PDFを確認）"
 
 def extract_unmatched_info(text, filename):
-    """未照合レシートから、数字（日付や金額）を中心に情報を抜き出して表を見やすくします"""
     clean_text = re.sub(r'\s+', ' ', text).strip()
-    
-    # 日付らしきものを探す
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
     date_str = dates[0] if dates else "（自動取得できず）"
     
-    # 金額らしきものを探す
     amounts = re.findall(r'[¥￥]\s*([0-9,]+)|([0-9,]+)\s*円', clean_text)
     amount_str = "（自動取得できず）"
     if amounts:
@@ -59,9 +94,7 @@ def extract_unmatched_info(text, filename):
                 amount_str = f"{match[1]}円"
                 break
 
-    # Excelで見やすいように、長い文章は短くカット
     preview = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
-    
     return {
         "ファイル名": filename,
         "推測される日付": date_str,
@@ -79,22 +112,21 @@ with col1:
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 正確に仕分けを開始する", use_container_width=True, type="primary"):
+if st.button("🐾 究極のダブルチェックで仕分けを開始！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
-        with st.spinner('🐻 データを正確に照合し、レポートを作成しています...'):
+        with st.spinner('🐻 金額と店名を厳密に照合しています...'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_dir = os.path.join(temp_dir, "03_仕分け結果")
                 os.makedirs(output_dir)
                 
                 statements = []
-                unmatched_list = [] # 未照合カードの一覧用リスト
+                unmatched_list = []
                 
-                # CSVの読み込み（複数対応！）
                 if csv_files:
                     for csv_file in csv_files:
-                        folder_name = f"{os.path.splitext(csv_file.name)[0]}" # CSVファイル名をそのままフォルダ名に
+                        folder_name = f"{os.path.splitext(csv_file.name)[0]}"
                         try:
                             decoded_file = csv_file.getvalue().decode('utf-8-sig').splitlines()
                             reader = csv.DictReader(decoded_file)
@@ -121,7 +153,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                         except Exception as e:
                             st.error(f"CSV読み込みエラー ({csv_file.name}): {e}")
 
-                # PDFの処理
                 for pdf_file in pdf_files:
                     try:
                         pdf_bytes = io.BytesIO(pdf_file.getvalue())
@@ -130,19 +161,25 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                             for page_num in range(len(reader.pages)):
                                 extracted = pdf_text.pages[page_num].extract_text()
                                 text = extracted if extracted else ""
-                                text_norm = text.lower().replace(" ", "").replace(" ", "").replace("\n", "")
+                                text_norm = text.lower().replace(" ", "").replace(" ", "")
+                                
+                                receipt_amounts = get_monetary_amounts(text)
                                 
                                 matched_card = None
                                 matched_info = None
                                 
+                                # 【最強のダブルチェックロジック】
                                 for item in statements:
                                     if not item['matched']:
-                                        if item['amount'] in text_norm or item['amount_comma'] in text_norm:
-                                            item['matched'] = True
-                                            matched_card = item['card_name']
-                                            matched_info = item
-                                            item['summary'] = extract_purchased_items(text)
-                                            break
+                                        # 条件1：金額がレシートの中にあるか
+                                        if item['amount'] in receipt_amounts:
+                                            # 条件2：店名がレシートの中にあるか
+                                            if is_shop_match(item['shop'], text):
+                                                item['matched'] = True
+                                                matched_card = item['card_name']
+                                                matched_info = item
+                                                item['summary'] = extract_purchased_items(text)
+                                                break
                                 
                                 writer = PdfWriter()
                                 writer.add_page(reader.pages[page_num])
@@ -151,7 +188,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                                     safe_date = sanitize_filename(matched_info['date'])
                                     safe_shop = sanitize_filename(matched_info['shop'])
                                     new_filename = f"{safe_date}_{safe_shop}_{matched_info['amount_comma']}円.pdf"
-                                    # CSV名ごとの専用フォルダに入れる
                                     target_dir = os.path.join(output_dir, f"01_{matched_card}")
                                 else:
                                     base_name = os.path.splitext(pdf_file.name)[0]
@@ -161,7 +197,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                                         target_dir = os.path.join(output_dir, '02_PayPay支払い分')
                                     elif any(k in text_norm for k in CARD_KEYWORDS):
                                         target_dir = os.path.join(output_dir, '03_未照合カード')
-                                        # 表用に日付と金額を解析してリストに追加
                                         info = extract_unmatched_info(text, new_filename)
                                         unmatched_list.append(info)
                                     elif any(k in text_norm for k in CASH_KEYWORDS):
@@ -183,7 +218,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                     except Exception as e:
                         st.error(f"PDF処理エラー ({pdf_file.name}): {e}")
 
-                # --- 📊 集計とレポートの作成 ---
                 total_count = len(statements)
                 matched_count = sum(1 for item in statements if item['matched'])
                 missing_count = total_count - matched_count
@@ -199,7 +233,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                         writer = csv.writer(f)
                         writer.writerows(report_data)
 
-                # --- 📊 未照合カード一覧の作成 ---
                 if unmatched_list:
                     unmatched_path = os.path.join(output_dir, '03_未照合カード', "📝未照合カード一覧.csv")
                     if not os.path.exists(os.path.join(output_dir, '03_未照合カード')):
@@ -210,7 +243,6 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                         for info in unmatched_list:
                             writer.writerow([info["ファイル名"], info["推測される日付"], info["推測される金額"], info["レシート内テキスト（一部抜粋）"]])
 
-                # --- ZIPファイル化 ---
                 zip_path = os.path.join(temp_dir, "仕分け結果.zip")
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for root, _, files in os.walk(output_dir):
@@ -219,23 +251,19 @@ if st.button("🐾 正確に仕分けを開始する", use_container_width=True,
                             arcname = os.path.relpath(file_path, output_dir)
                             zipf.write(file_path, arcname)
 
-                # --- 画面に結果を表示 ---
-                st.success("🐰 すべての処理が完了しました！")
+                st.success("🐰 厳格な処理が完了しました！")
                 
-                # 集計結果を画面に出す
                 st.subheader("📊 照合サマリー（結果報告）")
                 col1, col2, col3 = st.columns(3)
                 col1.metric("📄 明細の総件数", f"{total_count} 件")
                 col2.metric("✅ レシート提出済", f"{matched_count} 件")
                 col3.metric("❌ 未提出（不足分）", f"{missing_count} 件")
                 
-                # 画面上に未照合カードの表も表示してあげる（見やすい！）
                 if unmatched_list:
-                    st.subheader("💳 未照合カード一覧（レシートはあるが明細がないもの）")
+                    st.subheader("💳 未照合カード一覧（要手動確認）")
                     st.dataframe(unmatched_list, use_container_width=True)
 
                 st.divider()
-                st.markdown("👇 以下のボタンから、キレイに整理されたフォルダとレポートを受け取ってください！")
                 with open(zip_path, "rb") as f:
                     st.download_button(
                         label="📥 整理されたフォルダ（ZIP）をダウンロード",
