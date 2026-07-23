@@ -1,3 +1,4 @@
+
 import streamlit as st
 import os
 import csv
@@ -9,14 +10,12 @@ import io
 import re
 import unicodedata
 
-# 🐻 画面の基本設定
-st.set_page_config(page_title="【完全無欠版】レシート自動仕分け", page_icon="🐻", layout="wide")
+st.set_page_config(page_title="【ユーザー提案版】レシート自動仕分け", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("【正確性100%】金額の完全一致 ＋ 店名のダブルチェックで、誤検知を完全に防ぎます。🐾")
+st.markdown("【合計金額狙い撃ち】最も確実なルールで、正確に仕分けを行います。🐾")
 st.divider()
 
-# --- キーワード設定 ---
 CARD_KEYWORDS = ["クレジット", "visa", "mastercard", "jcb", "amex", "ｸﾚｼﾞｯﾄ", "一括", "お客様控え", "クレ電子", "アメリカン", "カード売"]
 CASH_KEYWORDS = ["現金", "お預り", "お釣り", "お預かり"]
 PAYPAY_KEYWORDS = ["paypay", "ペイペイ", "ｐａｙｐａｙ"]
@@ -27,39 +26,38 @@ def sanitize_filename(text):
     return text
 
 def normalize_for_match(text):
-    """全角・半角・大文字・小文字を統一し、スペースを消す魔法"""
     if not text: return ""
     norm = unicodedata.normalize('NFKC', text).upper()
     return re.sub(r'\s+', '', norm)
 
 def is_shop_match(csv_shop, receipt_text):
-    """【新機能】店名がレシートに含まれているかチェック"""
-    if not csv_shop or csv_shop == '不明': return False
+    """店名チェック（厳しすぎないように最初の2文字だけでふんわり確認）"""
+    if not csv_shop or csv_shop == '不明': return True # 不明な場合は金額だけで通す
     
     shop_norm = normalize_for_match(csv_shop)
     receipt_norm = normalize_for_match(receipt_text)
-    
-    # ㈱ や 株式会社 などの法人表記を無視して、純粋な店名だけにする
     clean_shop = re.sub(r'(カ\)|株\)|\(カ\)|\(株\)|カブシキガイシャ|株式会社|合同会社)', '', shop_norm)
     
-    # 店名の最初の3文字をキーワードとして抽出（短ければそのまま）
-    keyword = clean_shop[:3] if len(clean_shop) >= 3 else clean_shop
+    # 最初の2文字だけを抽出（JRなど短いものに対応）
+    keyword = clean_shop[:2] if len(clean_shop) >= 2 else clean_shop
     
-    # レシートの中にそのキーワードが含まれていれば、店名一致とみなす！
     if keyword and keyword in receipt_norm:
         return True
     return False
 
 def get_monetary_amounts(text):
-    """文章から「お金（金額）」だけを抜き出す"""
+    """【ユーザー様提案！】「合計」などの右側にある数字をピンポイントで狙い撃ち！"""
     amounts = set()
+    
+    # 提案ロジック：「合計」「計」「お買上額」などのすぐ右側にある数字を抽出！
+    # 例："合計 ¥ 6,545" や "計 6545円" から "6545" を抜き出す魔法
+    matches = re.findall(r'(?:合計|計|お買上額|お支払総額|請求額|金額)[^\d]*([0-9,]+)', text)
+    for m in matches: amounts.add(m.replace(',', ''))
+    
+    # 保険ロジック：単独の ¥ や 円 も一応拾う
     matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
-    
     matches = re.findall(r'([0-9,]+)\s*円', text)
-    for m in matches: amounts.add(m.replace(',', ''))
-    
-    matches = re.findall(r'(?:合計|計|合計金額)\s*[:：]?\s*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
     
     return amounts
@@ -83,7 +81,7 @@ def extract_unmatched_info(text, filename):
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
     date_str = dates[0] if dates else "（自動取得できず）"
     
-    amounts = re.findall(r'[¥￥]\s*([0-9,]+)|([0-9,]+)\s*円', clean_text)
+    amounts = re.findall(r'(?:合計|計)[^\d]*([0-9,]+)|[¥￥]\s*([0-9,]+)|([0-9,]+)\s*円', clean_text)
     amount_str = "（自動取得できず）"
     if amounts:
         for match in amounts:
@@ -91,7 +89,10 @@ def extract_unmatched_info(text, filename):
                 amount_str = f"¥{match[0]}"
                 break
             elif match[1]: 
-                amount_str = f"{match[1]}円"
+                amount_str = f"¥{match[1]}"
+                break
+            elif match[2]:
+                amount_str = f"{match[2]}円"
                 break
 
     preview = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
@@ -112,11 +113,11 @@ with col1:
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 究極のダブルチェックで仕分けを開始！", use_container_width=True, type="primary"):
+if st.button("🐾 改良版ロジックで仕分けを開始！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
-        with st.spinner('🐻 金額と店名を厳密に照合しています...'):
+        with st.spinner('🐻 データを正確に読み取っています...'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_dir = os.path.join(temp_dir, "03_仕分け結果")
                 os.makedirs(output_dir)
@@ -128,7 +129,13 @@ if st.button("🐾 究極のダブルチェックで仕分けを開始！", use_
                     for csv_file in csv_files:
                         folder_name = f"{os.path.splitext(csv_file.name)[0]}"
                         try:
-                            decoded_file = csv_file.getvalue().decode('utf-8-sig').splitlines()
+                            # 【修正】文字化け対策：UTF-8とShift-JISの両方に対応！
+                            content = csv_file.getvalue()
+                            try:
+                                decoded_file = content.decode('utf-8-sig').splitlines()
+                            except UnicodeDecodeError:
+                                decoded_file = content.decode('shift_jis').splitlines()
+                                
                             reader = csv.DictReader(decoded_file)
                             for row in reader:
                                 amount_key = next((k for k in row.keys() if k and '金額' in k), None)
@@ -163,17 +170,16 @@ if st.button("🐾 究極のダブルチェックで仕分けを開始！", use_
                                 text = extracted if extracted else ""
                                 text_norm = text.lower().replace(" ", "").replace(" ", "")
                                 
+                                # あなたの提案ロジックで金額を抽出！
                                 receipt_amounts = get_monetary_amounts(text)
                                 
                                 matched_card = None
                                 matched_info = None
                                 
-                                # 【最強のダブルチェックロジック】
                                 for item in statements:
                                     if not item['matched']:
-                                        # 条件1：金額がレシートの中にあるか
                                         if item['amount'] in receipt_amounts:
-                                            # 条件2：店名がレシートの中にあるか
+                                            # 店名チェックはふんわり（2文字）にして未照合行きを減らす
                                             if is_shop_match(item['shop'], text):
                                                 item['matched'] = True
                                                 matched_card = item['card_name']
@@ -251,7 +257,7 @@ if st.button("🐾 究極のダブルチェックで仕分けを開始！", use_
                             arcname = os.path.relpath(file_path, output_dir)
                             zipf.write(file_path, arcname)
 
-                st.success("🐰 厳格な処理が完了しました！")
+                st.success("🐰 改良版ロジックでの処理が完了しました！")
                 
                 st.subheader("📊 照合サマリー（結果報告）")
                 col1, col2, col3 = st.columns(3)
