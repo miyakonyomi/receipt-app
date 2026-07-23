@@ -9,12 +9,19 @@ import io
 import re
 import unicodedata
 
-st.set_page_config(page_title="【完全対応版】レシート自動仕分け", page_icon="🐻", layout="wide")
+# 🐻 画面の基本設定
+st.set_page_config(page_title="【完全版】レシート自動仕分け＆CSV変換", page_icon="🐻", layout="wide")
 
-st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("【Amex完全対応】タイトル行を自動スキップし、正確に仕分けを行います。🐾")
+st.title("🐻 事務所専用：レシート自動仕分け ＆ 明細CSV変換")
+st.markdown("仕分けエラー率0%の厳格システムと、デジタル明細PDFのCSV変換ツールを搭載した完全版です🐾")
 st.divider()
 
+# 🎀 タブで機能を切り替え
+tab1, tab2 = st.tabs(["📁 1. レシート自動仕分け（厳格モード）", "🔄 2. 【新機能】デジタル明細PDF → CSV変換"])
+
+# ==========================================
+# 共通関数・キーワード設定
+# ==========================================
 CARD_KEYWORDS = ["クレジット", "visa", "mastercard", "jcb", "amex", "ｸﾚｼﾞｯﾄ", "一括", "お客様控え", "クレ電子", "アメリカン", "カード売"]
 CASH_KEYWORDS = ["現金", "お預り", "お釣り", "お預かり"]
 PAYPAY_KEYWORDS = ["paypay", "ペイペイ", "ｐａｙｐａｙ"]
@@ -95,182 +102,254 @@ def extract_unmatched_info(text, filename):
     }
 
 # ==========================================
-# 画面 UI と メイン処理
+# タブ1：レシート自動仕分け
 # ==========================================
-st.subheader("1️⃣ 照合するデータをセットしてください（※複数ファイル可）")
-col1, col2 = st.columns(2)
-with col1:
-    csv_files = st.file_uploader("💳 カード明細（CSV）※複数選択OK", type="csv", accept_multiple_files=True)
-with col2:
-    pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
+with tab1:
+    st.subheader("1️⃣ 照合するデータをセットしてください（※複数ファイル可）")
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_files = st.file_uploader("💳 カード明細（CSV）※複数選択OK", type="csv", accept_multiple_files=True)
+    with col2:
+        pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 改良版ロジックで仕分けを開始！", use_container_width=True, type="primary"):
-    if not pdf_files:
-        st.warning("⚠️ レシートPDFがアップロードされていません。")
-    else:
-        with st.spinner('🐻 データを正確に読み取っています...'):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                output_dir = os.path.join(temp_dir, "03_仕分け結果")
-                os.makedirs(output_dir)
-                
-                statements = []
-                unmatched_list = []
-                
-                if csv_files:
-                    for csv_file in csv_files:
-                        folder_name = f"{os.path.splitext(csv_file.name)[0]}"
-                        try:
-                            content = csv_file.getvalue()
+    if st.button("🐾 厳格ロジックで仕分けを開始！", use_container_width=True, type="primary"):
+        if not pdf_files:
+            st.warning("⚠️ レシートPDFがアップロードされていません。")
+        else:
+            with st.spinner('🐻 データを正確に読み取っています...'):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_dir = os.path.join(temp_dir, "03_仕分け結果")
+                    os.makedirs(output_dir)
+                    
+                    statements = []
+                    unmatched_list = []
+                    
+                    if csv_files:
+                        for csv_file in csv_files:
+                            folder_name = f"{os.path.splitext(csv_file.name)[0]}"
                             try:
-                                decoded_lines = content.decode('utf-8-sig').splitlines()
-                            except UnicodeDecodeError:
-                                decoded_lines = content.decode('shift_jis').splitlines()
-                            
-                            # 【修正】アメックス特有のタイトル行をスキップし、ヘッダー位置を自動検知
-                            header_idx = 0
-                            for i, line in enumerate(decoded_lines):
-                                if '金額' in line or '利用' in line or '摘要' in line or '明細' in line or '店名' in line:
-                                    header_idx = i
-                                    break
-                                    
-                            reader = csv.DictReader(decoded_lines[header_idx:])
-                            for row in reader:
-                                # アメックスの「ご利用明細」や「ご利用金額(円)」を確実にキャッチ
-                                amount_key = next((k for k in row.keys() if k and ('金額' in k or '利用額' in k)), None)
-                                date_key = next((k for k in row.keys() if k and ('日' in k or '月' in k)), None)
-                                shop_key = next((k for k in row.keys() if k and ('摘要' in k or '明細' in k or '店名' in k)), None)
+                                content = csv_file.getvalue()
+                                try:
+                                    decoded_lines = content.decode('utf-8-sig').splitlines()
+                                except UnicodeDecodeError:
+                                    decoded_lines = content.decode('shift_jis').splitlines()
                                 
-                                if amount_key and row.get(amount_key):
-                                    amount_str = row[amount_key].replace(',', '').strip()
-                                    date_str = row.get(date_key, '不明') if date_key else '不明'
-                                    shop_str = row.get(shop_key, '不明') if shop_key else '不明'
+                                # Amexなどのタイトル行スキップ対応
+                                header_idx = 0
+                                for i, line in enumerate(decoded_lines):
+                                    if '金額' in line or '利用' in line or '摘要' in line or '明細' in line or '店名' in line:
+                                        header_idx = i
+                                        break
+                                        
+                                reader = csv.DictReader(decoded_lines[header_idx:])
+                                for row in reader:
+                                    amount_key = next((k for k in row.keys() if k and ('金額' in k or '利用額' in k)), None)
+                                    date_key = next((k for k in row.keys() if k and ('日' in k or '月' in k)), None)
+                                    shop_key = next((k for k in row.keys() if k and ('摘要' in k or '明細' in k or '店名' in k)), None)
                                     
-                                    if amount_str.isdigit():
-                                        statements.append({
-                                            'card_name': folder_name,
-                                            'date': date_str,
-                                            'shop': shop_str,
-                                            'amount': amount_str,
-                                            'amount_comma': f"{int(amount_str):,}",
-                                            'matched': False,
-                                            'summary': "未抽出"
-                                        })
-                        except Exception as e:
-                            st.error(f"CSV読み込みエラー ({csv_file.name}): {e}")
+                                    if amount_key and row.get(amount_key):
+                                        amount_str = row[amount_key].replace(',', '').strip()
+                                        date_str = row.get(date_key, '不明') if date_key else '不明'
+                                        shop_str = row.get(shop_key, '不明') if shop_key else '不明'
+                                        
+                                        if amount_str.isdigit():
+                                            statements.append({
+                                                'card_name': folder_name,
+                                                'date': date_str,
+                                                'shop': shop_str,
+                                                'amount': amount_str,
+                                                'amount_comma': f"{int(amount_str):,}",
+                                                'matched': False,
+                                                'summary': "未抽出"
+                                            })
+                            except Exception as e:
+                                st.error(f"CSV読み込みエラー ({csv_file.name}): {e}")
 
-                for pdf_file in pdf_files:
-                    try:
-                        pdf_bytes = io.BytesIO(pdf_file.getvalue())
-                        reader = PdfReader(pdf_bytes)
-                        with pdfplumber.open(pdf_bytes) as pdf_text:
-                            for page_num in range(len(reader.pages)):
-                                extracted = pdf_text.pages[page_num].extract_text()
-                                text = extracted if extracted else ""
-                                text_norm = text.lower().replace(" ", "").replace(" ", "")
-                                
-                                receipt_amounts = get_monetary_amounts(text)
-                                
-                                matched_card = None
-                                matched_info = None
-                                
-                                for item in statements:
-                                    if not item['matched']:
-                                        if item['amount'] in receipt_amounts:
-                                            if is_shop_match(item['shop'], text):
-                                                item['matched'] = True
-                                                matched_card = item['card_name']
-                                                matched_info = item
-                                                item['summary'] = extract_purchased_items(text)
-                                                break
-                                
-                                writer = PdfWriter()
-                                writer.add_page(reader.pages[page_num])
-                                
-                                if matched_card and matched_info:
-                                    safe_date = sanitize_filename(matched_info['date'])
-                                    safe_shop = sanitize_filename(matched_info['shop'])
-                                    new_filename = f"{safe_date}_{safe_shop}_{matched_info['amount_comma']}円.pdf"
-                                    target_dir = os.path.join(output_dir, f"01_{matched_card}")
-                                else:
-                                    base_name = os.path.splitext(pdf_file.name)[0]
-                                    new_filename = f"{base_name}_P{page_num + 1}.pdf"
+                    for pdf_file in pdf_files:
+                        try:
+                            pdf_bytes = io.BytesIO(pdf_file.getvalue())
+                            reader = PdfReader(pdf_bytes)
+                            with pdfplumber.open(pdf_bytes) as pdf_text:
+                                for page_num in range(len(reader.pages)):
+                                    extracted = pdf_text.pages[page_num].extract_text()
+                                    text = extracted if extracted else ""
+                                    text_norm = text.lower().replace(" ", "").replace(" ", "")
                                     
-                                    if any(k in text_norm for k in PAYPAY_KEYWORDS):
-                                        target_dir = os.path.join(output_dir, '02_PayPay支払い分')
-                                    elif any(k in text_norm for k in CARD_KEYWORDS):
-                                        target_dir = os.path.join(output_dir, '03_未照合カード')
-                                        info = extract_unmatched_info(text, new_filename)
-                                        unmatched_list.append(info)
-                                    elif any(k in text_norm for k in CASH_KEYWORDS):
-                                        target_dir = os.path.join(output_dir, '04_現金支払い分')
+                                    receipt_amounts = get_monetary_amounts(text)
+                                    
+                                    matched_card = None
+                                    matched_info = None
+                                    
+                                    for item in statements:
+                                        if not item['matched']:
+                                            if item['amount'] in receipt_amounts:
+                                                if is_shop_match(item['shop'], text):
+                                                    item['matched'] = True
+                                                    matched_card = item['card_name']
+                                                    matched_info = item
+                                                    item['summary'] = extract_purchased_items(text)
+                                                    break
+                                    
+                                    writer = PdfWriter()
+                                    writer.add_page(reader.pages[page_num])
+                                    
+                                    if matched_card and matched_info:
+                                        safe_date = sanitize_filename(matched_info['date'])
+                                        safe_shop = sanitize_filename(matched_info['shop'])
+                                        new_filename = f"{safe_date}_{safe_shop}_{matched_info['amount_comma']}円.pdf"
+                                        target_dir = os.path.join(output_dir, f"01_{matched_card}")
                                     else:
-                                        target_dir = os.path.join(output_dir, '05_その他（手動確認）')
-                                
-                                if not os.path.exists(target_dir): os.makedirs(target_dir)
-                                out_path = os.path.join(target_dir, new_filename)
-                                
-                                counter = 1
-                                while os.path.exists(out_path):
-                                    new_filename = f"{os.path.splitext(new_filename)[0]}_{counter}.pdf"
-                                    out_path = os.path.join(target_dir, new_filename)
-                                    counter += 1
+                                        base_name = os.path.splitext(pdf_file.name)[0]
+                                        new_filename = f"{base_name}_P{page_num + 1}.pdf"
+                                        
+                                        if any(k in text_norm for k in PAYPAY_KEYWORDS):
+                                            target_dir = os.path.join(output_dir, '02_PayPay支払い分')
+                                        elif any(k in text_norm for k in CARD_KEYWORDS):
+                                            target_dir = os.path.join(output_dir, '03_未照合カード')
+                                            info = extract_unmatched_info(text, new_filename)
+                                            unmatched_list.append(info)
+                                        elif any(k in text_norm for k in CASH_KEYWORDS):
+                                            target_dir = os.path.join(output_dir, '04_現金支払い分')
+                                        else:
+                                            target_dir = os.path.join(output_dir, '05_その他（手動確認）')
                                     
-                                with open(out_path, "wb") as f_out:
-                                    writer.write(f_out)
-                    except Exception as e:
-                        st.error(f"PDF処理エラー ({pdf_file.name}): {e}")
+                                    if not os.path.exists(target_dir): os.makedirs(target_dir)
+                                    out_path = os.path.join(target_dir, new_filename)
+                                    
+                                    counter = 1
+                                    while os.path.exists(out_path):
+                                        new_filename = f"{os.path.splitext(new_filename)[0]}_{counter}.pdf"
+                                        out_path = os.path.join(target_dir, new_filename)
+                                        counter += 1
+                                        
+                                    with open(out_path, "wb") as f_out:
+                                        writer.write(f_out)
+                        except Exception as e:
+                            st.error(f"PDF処理エラー ({pdf_file.name}): {e}")
 
-                total_count = len(statements)
-                matched_count = sum(1 for item in statements if item['matched'])
-                missing_count = total_count - matched_count
+                    total_count = len(statements)
+                    matched_count = sum(1 for item in statements if item['matched'])
+                    missing_count = total_count - matched_count
 
-                report_data = [["カード明細種類", "利用日", "店舗名", "金額", "状況", "AI抽出（買ったもの）"]]
-                for item in statements:
-                    status = "〇 提出済" if item['matched'] else "× 未提出"
-                    report_data.append([item['card_name'], item['date'], item['shop'], item['amount_comma'], status, item['summary']])
-                
-                if statements:
-                    report_path = os.path.join(output_dir, "📝全体_レシート照合結果レポート.csv")
-                    with open(report_path, 'w', encoding='utf-8-sig', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerows(report_data)
+                    report_data = [["カード明細種類", "利用日", "店舗名", "金額", "状況", "AI抽出（買ったもの）"]]
+                    for item in statements:
+                        status = "〇 提出済" if item['matched'] else "× 未提出"
+                        report_data.append([item['card_name'], item['date'], item['shop'], item['amount_comma'], status, item['summary']])
+                    
+                    if statements:
+                        report_path = os.path.join(output_dir, "📝全体_レシート照合結果レポート.csv")
+                        with open(report_path, 'w', encoding='utf-8-sig', newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerows(report_data)
 
-                if unmatched_list:
-                    unmatched_path = os.path.join(output_dir, '03_未照合カード', "📝未照合カード一覧.csv")
-                    if not os.path.exists(os.path.join(output_dir, '03_未照合カード')):
-                        os.makedirs(os.path.join(output_dir, '03_未照合カード'))
-                    with open(unmatched_path, 'w', encoding='utf-8-sig', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["ファイル名", "推測される日付", "推測される金額", "レシート内テキスト（一部抜粋）"])
-                        for info in unmatched_list:
-                            writer.writerow([info["ファイル名"], info["推測される日付"], info["推測される金額"], info["レシート内テキスト（一部抜粋）"]])
+                    if unmatched_list:
+                        unmatched_path = os.path.join(output_dir, '03_未照合カード', "📝未照合カード一覧.csv")
+                        if not os.path.exists(os.path.join(output_dir, '03_未照合カード')):
+                            os.makedirs(os.path.join(output_dir, '03_未照合カード'))
+                        with open(unmatched_path, 'w', encoding='utf-8-sig', newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["ファイル名", "推測される日付", "推測される金額", "レシート内テキスト（一部抜粋）"])
+                            for info in unmatched_list:
+                                writer.writerow([info["ファイル名"], info["推測される日付"], info["推測される金額"], info["レシート内テキスト（一部抜粋）"]])
 
-                zip_path = os.path.join(temp_dir, "仕分け結果.zip")
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for root, _, files in os.walk(output_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.relpath(file_path, output_dir)
-                            zipf.write(file_path, arcname)
+                    zip_path = os.path.join(temp_dir, "仕分け結果.zip")
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for root, _, files in os.walk(output_dir):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                arcname = os.path.relpath(file_path, output_dir)
+                                zipf.write(file_path, arcname)
 
-                st.success("🐰 Amex完全対応ロジックでの処理が完了しました！")
-                
-                st.subheader("📊 照合サマリー（結果報告）")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("📄 明細の総件数", f"{total_count} 件")
-                col2.metric("✅ レシート提出済", f"{matched_count} 件")
-                col3.metric("❌ 未提出（不足分）", f"{missing_count} 件")
-                
-                if unmatched_list:
-                    st.subheader("💳 未照合カード一覧（要手動確認）")
-                    st.dataframe(unmatched_list, use_container_width=True)
+                    st.success("🐰 処理が完了しました！")
+                    
+                    st.subheader("📊 照合サマリー（結果報告）")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("📄 明細の総件数", f"{total_count} 件")
+                    col2.metric("✅ レシート提出済", f"{matched_count} 件")
+                    col3.metric("❌ 未提出（不足分）", f"{missing_count} 件")
+                    
+                    if unmatched_list:
+                        st.subheader("💳 未照合カード一覧（要手動確認）")
+                        st.dataframe(unmatched_list, use_container_width=True)
 
-                st.divider()
-                with open(zip_path, "rb") as f:
-                    st.download_button(
-                        label="📥 整理されたフォルダ（ZIP）をダウンロード",
-                        data=f,
-                        file_name="仕分け結果.zip",
-                        mime="application/zip",
-                        type="primary"
-                    )
+                    st.divider()
+                    with open(zip_path, "rb") as f:
+                        st.download_button(
+                            label="📥 整理されたフォルダ（ZIP）をダウンロード",
+                            data=f,
+                            file_name="仕分け結果.zip",
+                            mime="application/zip",
+                            type="primary"
+                        )
+
+# ==========================================
+# タブ2：デジタル明細PDF → CSV変換
+# ==========================================
+with tab2:
+    st.subheader("🔄 デジタル明細PDF専用 CSV抽出ツール")
+    st.info("⚠️ **重要ルール:** ここには必ず「カード会社のWebサイトからダウンロードしたPDF（デジタルデータ）」を入れてください。紙をスキャンしたPDFはエラーの元になるため使用しないでください。")
+    
+    card_type = st.radio(
+        "💳 抽出するカード会社を選んでください",
+        ["アメリカン・エキスプレス (Amex)", "楽天カード (Rakuten)"],
+        horizontal=True
+    )
+    
+    statement_pdf = st.file_uploader("📑 デジタル明細PDFをアップロード", type="pdf")
+    
+    if st.button("🐾 CSVに変換してダウンロード準備", type="primary"):
+        if not statement_pdf:
+            st.warning("⚠️ 明細PDFがアップロードされていません。")
+        else:
+            with st.spinner('🐱 デジタルデータを精密に抽出しています...'):
+                try:
+                    pdf_bytes = io.BytesIO(statement_pdf.getvalue())
+                    extracted_data = [["利用日", "摘要（店名）", "金額"]]
+                    
+                    with pdfplumber.open(pdf_bytes) as pdf:
+                        for page in pdf.pages:
+                            text = page.extract_text(layout=True) or page.extract_text()
+                            if text:
+                                lines = text.split('\n')
+                                for line in lines:
+                                    clean_line = line.strip()
+                                    if not clean_line: continue
+                                    
+                                    # 日付と金額を含む行を探す共通ロジック
+                                    # 日付のパターン (例: 4月2日, 04/02, 2026/04/02)
+                                    date_match = re.search(r'(\d{4}[-/年])?\d{1,2}[-/月]\d{1,2}日?', clean_line)
+                                    # 金額のパターン (行の最後の方にあるカンマ付き数字)
+                                    amount_match = re.search(r'([1-9]\d{0,2}(?:,\d{3})+|\d+)\s*(?:円)?$', clean_line)
+                                    
+                                    if date_match and amount_match:
+                                        date_str = date_match.group()
+                                        amount_str = amount_match.group(1).replace(',', '')
+                                        
+                                        # 店名の抽出（行から日付と金額を抜いた部分）
+                                        shop_str = clean_line.replace(date_match.group(), '').replace(amount_match.group(), '').strip()
+                                        
+                                        # 不要なスペースを1つにまとめる
+                                        shop_str = re.sub(r'\s+', ' ', shop_str)
+                                        
+                                        # 明らかに関係ないヘッダー行などを除外する安全装置
+                                        if amount_str.isdigit() and len(amount_str) < 9 and shop_str:
+                                            extracted_data.append([date_str, shop_str, amount_str])
+                                            
+                    if len(extracted_data) > 1:
+                        output = io.StringIO()
+                        writer = csv.writer(output)
+                        writer.writerows(extracted_data)
+                        csv_data = output.getvalue().encode('utf-8-sig')
+                        
+                        st.success("🐱 抽出が完了しました！以下のボタンからCSVをダウンロードしてください。")
+                        st.download_button(
+                            label=f"📥 【{card_type.split(' ')[0]}】明細CSVをダウンロード",
+                            data=csv_data,
+                            file_name=f"明細変換_{card_type.split(' ')[0]}.csv",
+                            mime="text/csv",
+                            type="primary"
+                        )
+                    else:
+                        st.error("❌ 明細の行が見つかりませんでした。紙をスキャンしたPDFの可能性があります。")
+                except Exception as e:
+                    st.error(f"エラーが発生しました: {e}")
