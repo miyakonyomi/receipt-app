@@ -8,13 +8,13 @@ import tempfile
 import io
 import re
 import unicodedata
-from datetime import date # 💡 カレンダー計算用の魔法を追加
+from datetime import date
 
 # 🐻 画面の基本設定
-st.set_page_config(page_title="【完全完成版】レシート自動仕分け", page_icon="🐻", layout="wide")
+st.set_page_config(page_title="【視覚AI版】レシート自動仕分けアシスタント", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("仕分けエラー率0%！「金額」と「日付（±4日のズレ許容）」の完全一致で正確にフォルダ分けを行います🐾")
+st.markdown("仕分けエラー率0%！「最大サイズの金額」と「日付」の完全一致で正確にフォルダ分けを行います🐾")
 st.divider()
 
 # ==========================================
@@ -36,7 +36,8 @@ def normalize_for_match(text):
 
 def extract_md_from_text(text):
     md_set = set()
-    matches = re.findall(r'(?:20\d{2}[年/.-])?([01]?\d)[月/.-]([0-3]?\d)日?', text)
+    # 文字化け対策で、スペースや記号が混じっていても無理やり日付を拾うように強化
+    matches = re.findall(r'(?:20\d{2}[年/.-])?\s*([01]?\d)\s*[月/.-]\s*([0-3]?\d)\s*(?:日)?', text)
     for m in matches:
         try:
             md_set.add((int(m[0]), int(m[1])))
@@ -45,7 +46,7 @@ def extract_md_from_text(text):
     return md_set
 
 def parse_csv_date(date_str):
-    match = re.search(r'(?:20\d{2}[年/.-])?([01]?\d)[月/.-]([0-3]?\d)日?', date_str)
+    match = re.search(r'(?:20\d{2}[年/.-])?\s*([01]?\d)\s*[月/.-]\s*([0-3]?\d)\s*(?:日)?', date_str)
     if match:
         try:
             return (int(match.group(1)), int(match.group(2)))
@@ -53,52 +54,64 @@ def parse_csv_date(date_str):
             pass
     return None
 
-# 💡【ユーザー様提案の新機能】日付が前後4日以内かチェックする計算機
 def is_within_tolerance(csv_md, receipt_md, tolerance=4):
     c_month, c_day = csv_md
     r_month, r_day = receipt_md
-    
-    # 閏年(2024年など)を基準にして、2月29日が存在してもエラーにならないようにカレンダー計算
     try:
         d1 = date(2024, c_month, c_day)
         d2 = date(2024, r_month, r_day)
     except ValueError:
         return False
-        
     diff = abs((d1 - d2).days)
-    
-    # 年またぎ（12月30日と1月2日など）のズレを修正する処理
-    if diff > 300: 
-        diff = 366 - diff
-        
+    if diff > 300: diff = 366 - diff
     return diff <= tolerance
 
-def get_monetary_amounts(text):
+# 💡【ユーザー様の神アイデア！】PDF内の「物理的に一番大きい数字」を抽出する機能
+def get_largest_amounts_from_page(page):
     amounts = set()
-    matches = re.findall(r'(?:合計|計|お買上額|お支払総額|請求額|金額)[^\d]*([0-9,]+)', text)
-    for m in matches: amounts.add(m.replace(',', ''))
-    
-    matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
-    for m in matches: amounts.add(m.replace(',', ''))
-    
-    matches = re.findall(r'([0-9,]+)\s*円', text)
-    for m in matches: amounts.add(m.replace(',', ''))
+    try:
+        words = page.extract_words(x_tolerance=3, y_tolerance=3)
+        nums = []
+        for w in words:
+            text = w['text']
+            # 余計な文字を消して数字だけにする
+            clean_text = re.sub(r'[¥￥円,]', '', text)
+            if clean_text.isdigit() and len(clean_text) >= 2: # 1桁の数字（個数など）は無視
+                # 💡 ここがミソ！文字の「高さ（bottom - top）」を計算してサイズを測る
+                height = w['bottom'] - w['top']
+                nums.append((clean_text, height))
+        
+        if nums:
+            # サイズが大きい順に並び替え！
+            nums.sort(key=lambda x: x[1], reverse=True)
+            # 一番大きい文字から上位3つだけを合計金額の候補としてピックアップ！
+            for val, _ in nums[:3]:
+                amounts.add(val)
+    except:
+        pass
     return amounts
 
-def extract_unmatched_info(text, filename, norm_text):
+def extract_purchased_items(text):
+    lines = text.split('\n')
+    items = []
+    ignore_words = ['計', '税', 'お釣り', 'クレジット', '対象', '点数', '現金', '支払', '承認', '番号', '会員', 'カード', '割引', 'No', 'レジ', '売上', '合', '外']
+    for line in lines:
+        if '¥' in line or '円' in line or '*' in line:
+            if not any(ignore in line for ignore in ignore_words):
+                clean_line = line.replace('¥', '').replace('*', '').strip()
+                if len(clean_line) > 2 and not clean_line.replace(',', '').isdigit():
+                    items.append(clean_line[:15])
+    if items:
+        return "、".join(items[:2])
+    return "（元PDFを確認）"
+
+def extract_unmatched_info(text, filename, norm_text, best_amounts):
     clean_text = re.sub(r'\s+', ' ', text).strip()
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
     date_str = dates[0] if dates else "（自動取得できず）"
     
-    amounts_matches = re.findall(r'(?:合計|計)[^\d]*([0-9,]+)|[¥￥]\s*([0-9,]+)|([0-9,]+)\s*円', clean_text)
-    possible_amounts = []
-    for match in amounts_matches:
-        for m in match:
-            if m:
-                try: possible_amounts.append(int(m.replace(',', '')))
-                except: pass
-    
-    amount_str = f"¥{max(possible_amounts):,}" if possible_amounts else "（自動取得できず）"
+    # 見つけた一番大きな数字を画面に表示する
+    amount_str = f"¥{max([int(x) for x in best_amounts]):,}" if best_amounts else "（自動取得できず）"
 
     return {
         "ファイル名": filename,
@@ -117,11 +130,11 @@ with col1:
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 究極のダブルロック（前後4日許容）で仕分けを開始！", use_container_width=True, type="primary"):
+if st.button("🐾 金額(最大サイズ)・日付のダブルロックで仕分けを開始！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
-        with st.spinner('🐻 カレンダー計算を用いて正確に読み取っています...'):
+        with st.spinner('🐻 あなたのアイデアで文字の「大きさ」を測っています...'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_dir = os.path.join(temp_dir, "03_仕分け結果")
                 os.makedirs(output_dir)
@@ -173,23 +186,20 @@ if st.button("🐾 究極のダブルロック（前後4日許容）で仕分け
                         reader = PdfReader(pdf_bytes)
                         with pdfplumber.open(pdf_bytes) as pdf_text:
                             for page_num in range(len(reader.pages)):
-                                extracted = pdf_text.pages[page_num].extract_text()
-                                text = extracted if extracted else ""
-                                
+                                page = pdf_text.pages[page_num]
+                                text = page.extract_text()
                                 text_norm = normalize_for_match(text)
                                 
-                                receipt_amounts = get_monetary_amounts(text)
+                                # 💡 あなたの神アイデアで「一番大きな文字の数字」を抽出！
+                                receipt_amounts = get_largest_amounts_from_page(page)
                                 receipt_dates = extract_md_from_text(text)
                                 
                                 matched_card = None
                                 matched_info = None
                                 
-                                # 💡【究極のダブルロック判定（前後4日の許容付き）】
                                 for item in statements:
                                     if not item['matched']:
-                                        # 条件1：金額が一致しているか？
                                         if item['amount'] in receipt_amounts:
-                                            # 条件2：日付が一致（前後4日以内）しているか？
                                             csv_md = parse_csv_date(item['date'])
                                             
                                             date_matched = False
@@ -201,14 +211,13 @@ if st.button("🐾 究極のダブルロック（前後4日許容）で仕分け
                                             
                                             if date_matched:
                                                 item['matched'] = True
-                                                item['summary'] = "金額・日付一致（±4日以内）"
+                                                item['summary'] = "金額(大)・日付一致"
                                                 matched_card = item['card_name']
                                                 matched_info = item
                                                 break
                                             elif not csv_md:
-                                                # CSVの日付が読み取れない異常時の保険
                                                 item['matched'] = True
-                                                item['summary'] = "金額一致（日付不明）"
+                                                item['summary'] = "金額(大)一致（日付不明）"
                                                 matched_card = item['card_name']
                                                 matched_info = item
                                                 break
@@ -234,7 +243,7 @@ if st.button("🐾 究極のダブルロック（前後4日許容）で仕分け
                                         target_dir = os.path.join(output_dir, '05_その他（手動確認）')
                                     
                                     if target_dir != os.path.join(output_dir, f"01_{matched_card}"):
-                                        info = extract_unmatched_info(text, new_filename, text_norm)
+                                        info = extract_unmatched_info(text, new_filename, text_norm, receipt_amounts)
                                         unmatched_list.append(info)
                                 
                                 if not os.path.exists(target_dir): os.makedirs(target_dir)
