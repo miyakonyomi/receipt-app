@@ -10,17 +10,21 @@ import re
 import unicodedata
 
 # 🐻 画面の基本設定
-st.set_page_config(page_title="【厳格版】レシート自動仕分けアシスタント", page_icon="🐻", layout="wide")
+st.set_page_config(page_title="【究極版】レシート自動仕分けアシスタント", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("仕分けエラー率0%の厳格システムです。金額と店名のダブルチェックで正確にフォルダ分けを行います🐾")
+st.markdown("仕分けエラー率0%の厳格システムです。洗練されたキーワードで正確にフォルダ分けを行います🐾")
 st.divider()
 
 # ==========================================
-# 共通関数・キーワード設定
+# 共通関数・究極のキーワード設定
 # ==========================================
-CARD_KEYWORDS = ["クレジット", "visa", "mastercard", "jcb", "amex", "ｸﾚｼﾞｯﾄ", "一括", "お客様控え", "クレ電子", "アメリカン", "カード売"]
-CASH_KEYWORDS = ["現金", "お預り", "お釣り", "お預かり"]
+# 💡 ユーザー様の神アイデアを採用！「クレシ」「クレジ」「Airペイ」など、誤認識しやすい一部の文字を追加
+CARD_KEYWORDS = ["クレジット", "クレシット", "クレジ", "クレシ", "visa", "mastercard", "jcb", "amex", "一括", "お客様控え", "アメリカン", "カード売", "airペイ", "エアペイ"]
+
+# 💡 ユーザー様の大発見を採用！「お釣り」「お預かり」はカードでも印字されるため除外。「現金」のみを信じる！
+CASH_KEYWORDS = ["現金", "現金払"]
+
 PAYPAY_KEYWORDS = ["paypay", "ペイペイ", "ｐａｙｐａｙ"]
 
 def sanitize_filename(text):
@@ -76,7 +80,6 @@ def extract_unmatched_info(text, filename):
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
     date_str = dates[0] if dates else "（自動取得できず）"
     
-    # 拾えた金額の中で一番大きい数字（＝合計金額である確率が高い）を表示するように改良
     amounts_matches = re.findall(r'(?:合計|計)[^\d]*([0-9,]+)|[¥￥]\s*([0-9,]+)|([0-9,]+)\s*円', clean_text)
     possible_amounts = []
     for match in amounts_matches:
@@ -107,11 +110,11 @@ def extract_unmatched_info(text, filename):
 st.subheader("1️⃣ 照合するデータをセットしてください（※複数ファイル可）")
 col1, col2 = st.columns(2)
 with col1:
-    csv_files = st.file_uploader("💳 カード明細（CSV）※複数選択OK", type="csv", accept_multiple_files=True)
+    csv_files = st.file_uploader("💳 公式のカード明細（CSV）※複数選択OK", type="csv", accept_multiple_files=True)
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 厳格ロジックで仕分けを開始！", use_container_width=True, type="primary"):
+if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
@@ -200,6 +203,7 @@ if st.button("🐾 厳格ロジックで仕分けを開始！", use_container_wi
                                     base_name = os.path.splitext(pdf_file.name)[0]
                                     new_filename = f"{base_name}_P{page_num + 1}.pdf"
                                     
+                                    # 💡 ここで新キーワード設定が活きます！
                                     if any(k in text_norm for k in PAYPAY_KEYWORDS):
                                         target_dir = os.path.join(output_dir, '02_PayPay支払い分')
                                     elif any(k in text_norm for k in CARD_KEYWORDS):
@@ -262,7 +266,7 @@ if st.button("🐾 厳格ロジックで仕分けを開始！", use_container_wi
                 
                 st.subheader("📊 照合サマリー（結果報告）")
                 col1, col2, col3 = st.columns(3)
-                col1.metric("📄 明細の総件数", f"{total_count} 件")
+                col1.metric("📄 公式明細の総件数", f"{total_count} 件")
                 col2.metric("✅ レシート提出済", f"{matched_count} 件")
                 col3.metric("❌ 未提出（不足分）", f"{missing_count} 件")
                 
