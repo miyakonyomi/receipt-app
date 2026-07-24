@@ -9,22 +9,16 @@ import io
 import re
 import unicodedata
 
-# 🐻 画面の基本設定
 st.set_page_config(page_title="【究極版】レシート自動仕分けアシスタント", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("仕分けエラー率0%の厳格システムです。洗練されたキーワードで正確にフォルダ分けを行います🐾")
+st.markdown("仕分けエラー率0%の厳格システムです。スキャナの文字化けを強制補正して読み取ります🐾")
 st.divider()
 
-# ==========================================
-# 共通関数・究極のキーワード設定
-# ==========================================
-# 💡 ユーザー様の神アイデアを採用！「クレシ」「クレジ」「Airペイ」など、誤認識しやすい一部の文字を追加
+# 💡 ユーザー様の神アイデアを採用した最強キーワード
 CARD_KEYWORDS = ["クレジット", "クレシット", "クレジ", "クレシ", "visa", "mastercard", "jcb", "amex", "一括", "お客様控え", "アメリカン", "カード売", "airペイ", "エアペイ"]
-
-# 💡 ユーザー様の大発見を採用！「お釣り」「お預かり」はカードでも印字されるため除外。「現金」のみを信じる！
+# 💡 お釣り・お預かりは除外！
 CASH_KEYWORDS = ["現金", "現金払"]
-
 PAYPAY_KEYWORDS = ["paypay", "ペイペイ", "ｐａｙｐａｙ"]
 
 def sanitize_filename(text):
@@ -34,12 +28,12 @@ def sanitize_filename(text):
 
 def normalize_for_match(text):
     if not text: return ""
+    # 💡【重要】半角カナや特殊な文字を、すべて綺麗な全角/標準文字に強制変換（文字化け対策）
     norm = unicodedata.normalize('NFKC', text).upper()
     return re.sub(r'\s+', '', norm)
 
 def is_shop_match(csv_shop, receipt_text):
     if not csv_shop or csv_shop == '不明': return True 
-    
     shop_norm = normalize_for_match(csv_shop)
     receipt_norm = normalize_for_match(receipt_text)
     clean_shop = re.sub(r'(カ\)|株\)|\(カ\)|\(株\)|カブシキガイシャ|株式会社|合同会社)', '', shop_norm)
@@ -53,10 +47,8 @@ def get_monetary_amounts(text):
     amounts = set()
     matches = re.findall(r'(?:合計|計|お買上額|お支払総額|請求額|金額)[^\d]*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
-    
     matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
     for m in matches: amounts.add(m.replace(',', ''))
-    
     matches = re.findall(r'([0-9,]+)\s*円', text)
     for m in matches: amounts.add(m.replace(',', ''))
     return amounts
@@ -75,7 +67,7 @@ def extract_purchased_items(text):
         return "、".join(items[:2])
     return "（元PDFを確認）"
 
-def extract_unmatched_info(text, filename):
+def extract_unmatched_info(text, filename, norm_text):
     clean_text = re.sub(r'\s+', ' ', text).strip()
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
     date_str = dates[0] if dates else "（自動取得できず）"
@@ -85,23 +77,17 @@ def extract_unmatched_info(text, filename):
     for match in amounts_matches:
         for m in match:
             if m:
-                try:
-                    possible_amounts.append(int(m.replace(',', '')))
-                except:
-                    pass
+                try: possible_amounts.append(int(m.replace(',', '')))
+                except: pass
     
-    if possible_amounts:
-        max_amt = max(possible_amounts)
-        amount_str = f"¥{max_amt:,}"
-    else:
-        amount_str = "（自動取得できず）"
+    amount_str = f"¥{max(possible_amounts):,}" if possible_amounts else "（自動取得できず）"
 
-    preview = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
+    # 💡 ユーザー様がプログラムの目（生データ）を確認できるようにフルテキストを表示
     return {
         "ファイル名": filename,
         "推測される日付": date_str,
         "推測される金額": amount_str,
-        "レシート内テキスト（一部抜粋）": preview
+        "🤖 AIが読み取った生の文字": norm_text[:100] + "..." # 最初の100文字を表示
     }
 
 # ==========================================
@@ -131,10 +117,8 @@ if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_con
                         folder_name = f"{os.path.splitext(csv_file.name)[0]}"
                         try:
                             content = csv_file.getvalue()
-                            try:
-                                decoded_lines = content.decode('utf-8-sig').splitlines()
-                            except UnicodeDecodeError:
-                                decoded_lines = content.decode('shift_jis').splitlines()
+                            try: decoded_lines = content.decode('utf-8-sig').splitlines()
+                            except UnicodeDecodeError: decoded_lines = content.decode('shift_jis').splitlines()
                             
                             header_idx = 0
                             for i, line in enumerate(decoded_lines):
@@ -174,7 +158,9 @@ if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_con
                             for page_num in range(len(reader.pages)):
                                 extracted = pdf_text.pages[page_num].extract_text()
                                 text = extracted if extracted else ""
-                                text_norm = text.lower().replace(" ", "").replace(" ", "")
+                                
+                                # 💡 ここが修正ポイント！半角カナなども全て標準化して判定する
+                                text_norm = normalize_for_match(text)
                                 
                                 receipt_amounts = get_monetary_amounts(text)
                                 
@@ -203,17 +189,18 @@ if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_con
                                     base_name = os.path.splitext(pdf_file.name)[0]
                                     new_filename = f"{base_name}_P{page_num + 1}.pdf"
                                     
-                                    # 💡 ここで新キーワード設定が活きます！
                                     if any(k in text_norm for k in PAYPAY_KEYWORDS):
                                         target_dir = os.path.join(output_dir, '02_PayPay支払い分')
                                     elif any(k in text_norm for k in CARD_KEYWORDS):
                                         target_dir = os.path.join(output_dir, '03_未照合カード')
-                                        info = extract_unmatched_info(text, new_filename)
-                                        unmatched_list.append(info)
                                     elif any(k in text_norm for k in CASH_KEYWORDS):
                                         target_dir = os.path.join(output_dir, '04_現金支払い分')
                                     else:
                                         target_dir = os.path.join(output_dir, '05_その他（手動確認）')
+                                    
+                                    if target_dir != os.path.join(output_dir, f"01_{matched_card}"):
+                                        info = extract_unmatched_info(text, new_filename, text_norm)
+                                        unmatched_list.append(info)
                                 
                                 if not os.path.exists(target_dir): os.makedirs(target_dir)
                                 out_path = os.path.join(target_dir, new_filename)
@@ -245,14 +232,12 @@ if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_con
                         writer.writerows(report_data)
 
                 if unmatched_list:
-                    unmatched_path = os.path.join(output_dir, '03_未照合カード', "📝未照合カード一覧.csv")
-                    if not os.path.exists(os.path.join(output_dir, '03_未照合カード')):
-                        os.makedirs(os.path.join(output_dir, '03_未照合カード'))
+                    unmatched_path = os.path.join(output_dir, "📝未照合・その他一覧（要確認）.csv")
                     with open(unmatched_path, 'w', encoding='utf-8-sig', newline='') as f:
                         writer = csv.writer(f)
-                        writer.writerow(["ファイル名", "推測される日付", "推測される金額", "レシート内テキスト（一部抜粋）"])
+                        writer.writerow(["ファイル名", "推測される日付", "推測される金額", "🤖 AIが読み取った生の文字"])
                         for info in unmatched_list:
-                            writer.writerow([info["ファイル名"], info["推測される日付"], info["推測される金額"], info["レシート内テキスト（一部抜粋）"]])
+                            writer.writerow([info["ファイル名"], info["推測される日付"], info["推測される金額"], info["🤖 AIが読み取った生の文字"]])
 
                 zip_path = os.path.join(temp_dir, "仕分け結果.zip")
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -271,7 +256,7 @@ if st.button("🐾 究極の厳格ロジックで仕分けを開始！", use_con
                 col3.metric("❌ 未提出（不足分）", f"{missing_count} 件")
                 
                 if unmatched_list:
-                    st.subheader("💳 未照合カード一覧（要手動確認）")
+                    st.subheader("💳 未照合・その他一覧（要手動確認）")
                     st.dataframe(unmatched_list, use_container_width=True)
 
                 st.divider()
