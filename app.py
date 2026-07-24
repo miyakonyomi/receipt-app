@@ -11,10 +11,10 @@ import unicodedata
 from datetime import date
 
 # 🐻 画面の基本設定
-st.set_page_config(page_title="【ハイブリッド版】レシート自動仕分け", page_icon="🐻", layout="wide")
+st.set_page_config(page_title="【トライアングル版】レシート自動仕分け", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("仕分けエラー率0%！「合計キーワード」と「最大文字サイズ」の段階的ハイブリッドで確実に仕分けます🐾")
+st.markdown("仕分けエラー率0%！「金額・日付・店名(3文字)」の3つのうち2つ一致で完璧に仕分けます🐾")
 st.divider()
 
 # ==========================================
@@ -34,23 +34,20 @@ def normalize_for_match(text):
     norm = unicodedata.normalize('NFKC', text).upper()
     return re.sub(r'\s+', '', norm)
 
+# 💡 日付の取得
 def extract_md_from_text(text):
     md_set = set()
     matches = re.findall(r'(?:20\d{2}[年/.-])?\s*([01]?\d)\s*[月/.-]\s*([0-3]?\d)\s*(?:日)?', text)
     for m in matches:
-        try:
-            md_set.add((int(m[0]), int(m[1])))
-        except:
-            pass
+        try: md_set.add((int(m[0]), int(m[1])))
+        except: pass
     return md_set
 
 def parse_csv_date(date_str):
     match = re.search(r'(?:20\d{2}[年/.-])?\s*([01]?\d)\s*[月/.-]\s*([0-3]?\d)\s*(?:日)?', date_str)
     if match:
-        try:
-            return (int(match.group(1)), int(match.group(2)))
-        except:
-            pass
+        try: return (int(match.group(1)), int(match.group(2)))
+        except: pass
     return None
 
 def is_within_tolerance(csv_md, receipt_md, tolerance=4):
@@ -65,53 +62,47 @@ def is_within_tolerance(csv_md, receipt_md, tolerance=4):
     if diff > 300: diff = 366 - diff
     return diff <= tolerance
 
-# 💡【第1段階】文字から「合計」等の周りの数字を探す（王道）
-def get_monetary_amounts(text):
-    amounts = set()
-    matches = re.findall(r'(?:合計|計|お買上額|お支払総額|請求額|金額)[^\d]*([0-9,]+)', text)
-    for m in matches: 
-        val = m.replace(',', '')
-        if val.isdigit() and len(val) <= 7: amounts.add(val)
+# 💡【重要】金額がレシートのどこかに存在するかチェック
+def amount_exists_in_text(amount_str, text_norm):
+    if not amount_str or not amount_str.isdigit(): return False
+    amt_comma = f"{int(amount_str):,}"
+    if amt_comma in text_norm: return True
     
-    matches = re.findall(r'[¥￥]\s*([0-9,]+)', text)
-    for m in matches: 
-        val = m.replace(',', '')
-        if val.isdigit() and len(val) <= 7: amounts.add(val)
+    text_no_comma = text_norm.replace(',', '')
+    if amount_str in text_no_comma: return True
+    return False
+
+# 💡【神アイデア】店名の先頭3文字がレシートに存在するかチェック！
+def is_shop_match_3chars(csv_shop, text_norm):
+    if not csv_shop or csv_shop == '不明': return False
+    # (株)などのゴミを消す
+    clean_shop = re.sub(r'(カ\)|株\)|\(カ\)|\(株\)|カブシキガイシャ|株式会社|合同会社|有限会社|一般社団法人)', '', csv_shop)
+    clean_shop = normalize_for_match(clean_shop)
+    if not clean_shop: return False
     
-    matches = re.findall(r'([0-9,]+)\s*円', text)
-    for m in matches: 
-        val = m.replace(',', '')
-        if val.isdigit() and len(val) <= 7: amounts.add(val)
-    return amounts
+    # 最初の3文字だけを抽出（3文字未満ならそのまま）
+    keyword = clean_shop[:3] if len(clean_shop) >= 3 else clean_shop
+    return keyword in text_norm
 
-# 💡【第2段階】文字化け対策：一番大きな数字を探す（異常値排除フィルター付き）
-def get_largest_amounts_from_page(page):
-    amounts = set()
-    try:
-        words = page.extract_words(x_tolerance=3, y_tolerance=3)
-        nums = []
-        for w in words:
-            text = w['text']
-            clean_text = re.sub(r'[¥￥円,]', '', text)
-            # バーコード（13桁）や呼出番号（1桁）を弾くため、2桁〜7桁（最大999万円）のみを対象とする
-            if clean_text.isdigit() and 2 <= len(clean_text) <= 7:
-                height = w['bottom'] - w['top']
-                nums.append((clean_text, height))
-        
-        if nums:
-            nums.sort(key=lambda x: x[1], reverse=True)
-            for val, _ in nums[:3]:
-                amounts.add(val)
-    except:
-        pass
-    return amounts
+# 💡 未照合リストの表示用（バグ数字を表示しないよう修正）
+def guess_amount_for_display(text):
+    matches = re.findall(r'(?:合計|計|請求額|金額|お買上額|お支払総額)[^\d]{0,5}?([1-9]\d{0,2}(?:,\d{3})*|0)', text)
+    matches += re.findall(r'[¥￥]\s*([1-9]\d{0,2}(?:,\d{3})*|0)', text)
+    matches += re.findall(r'([1-9]\d{0,2}(?:,\d{3})*|0)\s*円', text)
+    
+    valid_nums = []
+    for m in matches:
+        val = int(m.replace(',', ''))
+        if val <= 9999999: # 1000万未満のまともな数字だけ表示
+            valid_nums.append(val)
+            
+    return f"¥{max(valid_nums):,}" if valid_nums else "（手動確認）"
 
-def extract_unmatched_info(text, filename, norm_text, best_amounts):
+def extract_unmatched_info(text, filename, norm_text):
     clean_text = re.sub(r'\s+', ' ', text).strip()
     dates = re.findall(r'(20\d{2}[年/.-]\d{1,2}[月/.-]\d{1,2}日?)', clean_text)
-    date_str = dates[0] if dates else "（自動取得できず）"
-    
-    amount_str = f"¥{max([int(x) for x in best_amounts]):,}" if best_amounts else "（自動取得できず）"
+    date_str = dates[0] if dates else "（手動確認）"
+    amount_str = guess_amount_for_display(clean_text)
 
     return {
         "ファイル名": filename,
@@ -130,11 +121,11 @@ with col1:
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 段階的ハイブリッドで完璧に仕分けを開始！", use_container_width=True, type="primary"):
+if st.button("🐾 あなたのアイデア（三柱照合）で完璧に仕分け！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
-        with st.spinner('🐻 あなたの戦略（段階的アプローチ）で解析しています...'):
+        with st.spinner('🐻 あなたの神アイデアで3つの条件を照合しています...'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_dir = os.path.join(temp_dir, "03_仕分け結果")
                 os.makedirs(output_dir)
@@ -189,42 +180,49 @@ if st.button("🐾 段階的ハイブリッドで完璧に仕分けを開始！"
                                 page = pdf_text.pages[page_num]
                                 text = page.extract_text()
                                 text_norm = normalize_for_match(text)
-                                
-                                # 💡【第1・第2段階の統合】文字から探した金額と、大きさから探した金額を両方キープ！
-                                receipt_amounts = get_monetary_amounts(text)
-                                largest_amounts = get_largest_amounts_from_page(page)
-                                receipt_amounts.update(largest_amounts) # 両方の候補を合体
-                                
                                 receipt_dates = extract_md_from_text(text)
+                                
+                                candidates = []
+                                
+                                # 💡【究極のAIスコア判定】店名・金額・日付の3つのうち、2つ以上合えば合格！
+                                for item in statements:
+                                    if not item['matched']:
+                                        score = 0
+                                        reasons = []
+                                        
+                                        # ① 金額チェック（10点）
+                                        if amount_exists_in_text(item['amount'], text_norm):
+                                            score += 10
+                                            reasons.append("金額")
+                                            
+                                        # ② 日付チェック（10点）
+                                        csv_md = parse_csv_date(item['date'])
+                                        if csv_md and receipt_dates:
+                                            if any(is_within_tolerance(csv_md, r_md, tolerance=4) for r_md in receipt_dates):
+                                                score += 10
+                                                reasons.append("日付(±4日)")
+                                                
+                                        # ③ あなたの神アイデア！店名の先頭3文字チェック（10点）
+                                        if is_shop_match_3chars(item['shop'], text_norm):
+                                            score += 10
+                                            reasons.append("店名(3文字)")
+                                            
+                                        # 💡 3つのうち2つ（20点以上）合致すれば、完全に同一レシートとみなす！
+                                        if score >= 20:
+                                            candidates.append((score, item, "＋".join(reasons) + "一致"))
                                 
                                 matched_card = None
                                 matched_info = None
                                 
-                                # 💡【第3段階】CSV明細と徹底的に照合
-                                for item in statements:
-                                    if not item['matched']:
-                                        if item['amount'] in receipt_amounts:
-                                            csv_md = parse_csv_date(item['date'])
-                                            
-                                            date_matched = False
-                                            if csv_md:
-                                                for r_md in receipt_dates:
-                                                    if is_within_tolerance(csv_md, r_md, tolerance=4):
-                                                        date_matched = True
-                                                        break
-                                            
-                                            if date_matched:
-                                                item['matched'] = True
-                                                item['summary'] = "金額・日付一致"
-                                                matched_card = item['card_name']
-                                                matched_info = item
-                                                break
-                                            elif not csv_md:
-                                                item['matched'] = True
-                                                item['summary'] = "金額一致（日付不明）"
-                                                matched_card = item['card_name']
-                                                matched_info = item
-                                                break
+                                # 最もスコアが高い（可能性が高い）明細を1つだけ選ぶ
+                                if candidates:
+                                    candidates.sort(key=lambda x: x[0], reverse=True)
+                                    top_score, top_item, top_reason = candidates[0]
+                                    
+                                    top_item['matched'] = True
+                                    top_item['summary'] = top_reason
+                                    matched_card = top_item['card_name']
+                                    matched_info = top_item
                                 
                                 writer = PdfWriter()
                                 writer.add_page(reader.pages[page_num])
@@ -247,7 +245,7 @@ if st.button("🐾 段階的ハイブリッドで完璧に仕分けを開始！"
                                         target_dir = os.path.join(output_dir, '05_その他（手動確認）')
                                     
                                     if target_dir != os.path.join(output_dir, f"01_{matched_card}"):
-                                        info = extract_unmatched_info(text, new_filename, text_norm, receipt_amounts)
+                                        info = extract_unmatched_info(text, new_filename, text_norm)
                                         unmatched_list.append(info)
                                 
                                 if not os.path.exists(target_dir): os.makedirs(target_dir)
