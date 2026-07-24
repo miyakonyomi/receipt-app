@@ -14,7 +14,7 @@ from datetime import date
 st.set_page_config(page_title="【真・完成版】レシート自動仕分け", page_icon="🐻", layout="wide")
 
 st.title("🐻 事務所専用：レシート自動仕分けアシスタント")
-st.markdown("仕分けエラー率0%！「店名・日付・金額」の三柱照合と、誤検知防止フィルターで完璧に仕分けます🐾")
+st.markdown("仕分けエラー率0%！「店名・日付・金額」の三柱照合＋ダブりレシート吸収機能で完璧に仕分けます🐾")
 st.divider()
 
 # ==========================================
@@ -34,18 +34,14 @@ def normalize_for_match(text):
     norm = unicodedata.normalize('NFKC', text).upper()
     return re.sub(r'\s+', '', norm)
 
-# 💡【重要修正1】幻覚（誤検知）を見ないよう、日付の形式を「超・厳格」に制限
 def extract_md_from_text(text):
     md_set = set()
-    # パターン1: YYYY/MM/DD (前後に別の数字がないこと)
     for m in re.finditer(r'20\d{2}[/.-]([01]?\d)[/.-]([0-3]?\d)(?![\d/.-])', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
-    # パターン2: MM月DD日
     for m in re.finditer(r'([01]?\d)\s*月\s*([0-3]?\d)\s*日', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
-    # パターン3: MM/DD (前後に別の数字や記号がないこと)
     for m in re.finditer(r'(?<![\d/.-])([01]?\d)/([0-3]?\d)(?![\d/.-])', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
@@ -75,20 +71,17 @@ def is_within_tolerance(csv_md, receipt_md, tolerance=4):
     if diff > 300: diff = 366 - diff
     return diff <= tolerance
 
-# 💡【重要修正2】326468の中から468を拾わないよう、「独立した数字」のみを許可
 def amount_exists_in_text(amount_str, text_norm):
     if not amount_str or not amount_str.isdigit(): return False
     amt_comma = f"{int(amount_str):,}"
     if amt_comma in text_norm: return True
     
     text_no_comma = text_norm.replace(',', '')
-    # (?<!\d) と (?!\d) で、数字が前後にくっついていないかを厳格チェック！
     pattern = r'(?<!\d)' + amount_str + r'(?!\d)'
     if re.search(pattern, text_no_comma):
         return True
     return False
 
-# 💡【復活】あなたの神アイデア「一番大きい数字」を抽出
 def get_largest_amounts_from_page(page):
     amounts = set()
     try:
@@ -97,7 +90,6 @@ def get_largest_amounts_from_page(page):
         for w in words:
             text = w['text']
             clean_text = re.sub(r'[¥￥円,]', '', text)
-            # 1桁(個数)や8桁以上(バーコード)を排除
             if clean_text.isdigit() and 2 <= len(clean_text) <= 7:
                 height = w['bottom'] - w['top']
                 nums.append((clean_text, height))
@@ -160,11 +152,11 @@ with col1:
 with col2:
     pdf_files = st.file_uploader("🧾 レシート（PDF）※複数選択OK", type="pdf", accept_multiple_files=True)
 
-if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_container_width=True, type="primary"):
+if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_container_width=True, type="primary"):
     if not pdf_files:
         st.warning("⚠️ レシートPDFがアップロードされていません。")
     else:
-        with st.spinner('🐻 3612円の救出と、468円の排除を実行中...'):
+        with st.spinner('🐻 ダブりレシートを賢く整理しています...'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_dir = os.path.join(temp_dir, "03_仕分け結果")
                 os.makedirs(output_dir)
@@ -205,6 +197,7 @@ if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_con
                                             'amount': amount_str,
                                             'amount_comma': f"{int(amount_str):,}",
                                             'matched': False,
+                                            'matched_count': 0, # 💡 何枚のレシートを吸収したか数えるカウンター
                                             'summary': "未抽出"
                                         })
                         except Exception as e:
@@ -224,33 +217,36 @@ if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_con
                                 
                                 candidates = []
                                 
+                                # 💡【ダブり対応】すでにマッチ済みの明細も候補から外さず、すべて評価する！
                                 for item in statements:
-                                    if not item['matched']:
-                                        # 金額がテキストにあるか、または一番大きい文字として存在するか
-                                        amt_match = amount_exists_in_text(item['amount'], text_norm) or (item['amount'] in largest_amounts)
-                                        shop_match = is_shop_match_3chars(item['shop'], text_norm)
+                                    amt_match = amount_exists_in_text(item['amount'], text_norm) or (item['amount'] in largest_amounts)
+                                    shop_match = is_shop_match_3chars(item['shop'], text_norm)
+                                    
+                                    date_match = False
+                                    csv_md = parse_csv_date(item['date'])
+                                    if csv_md and receipt_dates:
+                                        if any(is_within_tolerance(csv_md, r_md, tolerance=4) for r_md in receipt_dates):
+                                            date_match = True
+                                    
+                                    is_valid = False
+                                    reason = ""
+                                    base_priority = 0
+                                    
+                                    if amt_match and date_match and shop_match:
+                                        is_valid, reason, base_priority = True, "金額＋日付＋店名(完璧)", 40
+                                    elif amt_match and shop_match:
+                                        is_valid, reason, base_priority = True, "金額＋店名", 30
+                                    elif shop_match and date_match:
+                                        is_valid, reason, base_priority = True, "店名＋日付(金額読取補完)", 20
+                                    elif amt_match and date_match:
+                                        is_valid, reason, base_priority = True, "金額＋日付", 10
                                         
-                                        date_match = False
-                                        csv_md = parse_csv_date(item['date'])
-                                        if csv_md and receipt_dates:
-                                            if any(is_within_tolerance(csv_md, r_md, tolerance=4) for r_md in receipt_dates):
-                                                date_match = True
-                                        
-                                        is_valid = False
-                                        reason = ""
-                                        priority = 0
-                                        
-                                        if amt_match and date_match and shop_match:
-                                            is_valid, reason, priority = True, "金額＋日付＋店名(完璧)", 4
-                                        elif amt_match and shop_match:
-                                            is_valid, reason, priority = True, "金額＋店名", 3
-                                        elif shop_match and date_match:
-                                            is_valid, reason, priority = True, "店名＋日付(金額読取補完)", 2
-                                        elif amt_match and date_match:
-                                            is_valid, reason, priority = True, "金額＋日付", 1
-                                            
-                                        if is_valid:
-                                            candidates.append((priority, item, "一致（" + reason + "）"))
+                                    if is_valid:
+                                        # 💡 【ペナルティ処理】すでにマッチ済みの明細は優先度を少し下げる（-5点）
+                                        # これにより、未マッチの同額同日明細があればそちらを優先し、
+                                        # なければダブりとして同じ明細に吸収する！
+                                        final_priority = base_priority - 5 if item['matched_count'] > 0 else base_priority
+                                        candidates.append((final_priority, item, "一致（" + reason + "）"))
                                 
                                 matched_card = None
                                 matched_info = None
@@ -260,7 +256,13 @@ if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_con
                                     top_priority, top_item, top_reason = candidates[0]
                                     
                                     top_item['matched'] = True
-                                    top_item['summary'] = top_reason
+                                    top_item['matched_count'] += 1 # 吸収した枚数をカウントアップ
+                                    
+                                    if top_item['matched_count'] > 1:
+                                        top_item['summary'] = f"{top_reason} 【複数枚検知: {top_item['matched_count']}枚】"
+                                    else:
+                                        top_item['summary'] = top_reason
+                                        
                                     matched_card = top_item['card_name']
                                     matched_info = top_item
                                 
@@ -292,8 +294,9 @@ if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_con
                                 out_path = os.path.join(target_dir, new_filename)
                                 
                                 counter = 1
+                                # 💡 すでに同名のファイル（1枚目）がある場合、「_1」「_2」と連番をつけて同じフォルダに共存させます
                                 while os.path.exists(out_path):
-                                    new_filename = f"{os.path.splitext(new_filename)[0]}_{counter}.pdf"
+                                    new_filename = f"{safe_date}_{matched_info['amount_comma']}円_{counter}.pdf" if matched_card else f"{os.path.splitext(new_filename)[0]}_{counter}.pdf"
                                     out_path = os.path.join(target_dir, new_filename)
                                     counter += 1
                                     
@@ -306,7 +309,6 @@ if st.button("🐾 あなたの神アイデアで完璧に仕分け！", use_con
                 matched_count = sum(1 for item in statements if item['matched'])
                 missing_count = total_count - matched_count
 
-                # 💡【リクエスト対応】レポートに「摘要（店名）」の列を追加しました！
                 report_data = [["カード明細種類", "利用日", "摘要（店名）", "金額", "状況", "AI判定理由"]]
                 for item in statements:
                     status = "〇 提出済" if item['matched'] else "× 未提出"
