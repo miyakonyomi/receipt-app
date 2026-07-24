@@ -34,27 +34,28 @@ def normalize_for_match(text):
     norm = unicodedata.normalize('NFKC', text).upper()
     return re.sub(r'\s+', '', norm)
 
+# 💡 日付のスペースを許容するように柔軟化
 def extract_md_from_text(text):
     md_set = set()
-    for m in re.finditer(r'20\d{2}[/.-]([01]?\d)[/.-]([0-3]?\d)(?![\d/.-])', text):
+    for m in re.finditer(r'20\d{2}\s*[/.-]\s*([01]?\d)\s*[/.-]\s*([0-3]?\d)(?![\d/.-])', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
     for m in re.finditer(r'([01]?\d)\s*月\s*([0-3]?\d)\s*日', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
-    for m in re.finditer(r'(?<![\d/.-])([01]?\d)/([0-3]?\d)(?![\d/.-])', text):
+    for m in re.finditer(r'(?<![\d/.-])([01]?\d)\s*[/.-]\s*([0-3]?\d)(?![\d/.-])', text):
         try: md_set.add((int(m.group(1)), int(m.group(2))))
         except: pass
     return md_set
 
 def parse_csv_date(date_str):
-    for m in re.finditer(r'20\d{2}[/.-]([01]?\d)[/.-]([0-3]?\d)(?![\d/.-])', date_str):
+    for m in re.finditer(r'20\d{2}\s*[/.-]\s*([01]?\d)\s*[/.-]\s*([0-3]?\d)(?![\d/.-])', date_str):
         try: return (int(m.group(1)), int(m.group(2)))
         except: pass
     for m in re.finditer(r'([01]?\d)\s*月\s*([0-3]?\d)\s*日', date_str):
         try: return (int(m.group(1)), int(m.group(2)))
         except: pass
-    for m in re.finditer(r'(?<![\d/.-])([01]?\d)/([0-3]?\d)(?![\d/.-])', date_str):
+    for m in re.finditer(r'(?<![\d/.-])([01]?\d)\s*[/.-]\s*([0-3]?\d)(?![\d/.-])', date_str):
         try: return (int(m.group(1)), int(m.group(2)))
         except: pass
     return None
@@ -71,13 +72,19 @@ def is_within_tolerance(csv_md, receipt_md, tolerance=4):
     if diff > 300: diff = 366 - diff
     return diff <= tolerance
 
+# 💡【重要修正】¥マークがついているものは確実に金額として拾う
 def amount_exists_in_text(amount_str, text_norm):
     if not amount_str or not amount_str.isdigit(): return False
     amt_comma = f"{int(amount_str):,}"
+    
+    # カンマ付きで存在すればOK
     if amt_comma in text_norm: return True
     
+    # ¥マーク付きで存在すれば問答無用でOK（FamilyMartやまいばすけっとの救済）
+    if f"¥{amount_str}" in text_norm or f"￥{amount_str}" in text_norm: return True
+    
     text_no_comma = text_norm.replace(',', '')
-    pattern = r'(?<!\d)' + amount_str + r'(?!\d)'
+    pattern = r'(?<![\d\-\/:])' + amount_str + r'(?![\d\-\/:])'
     if re.search(pattern, text_no_comma):
         return True
     return False
@@ -197,7 +204,7 @@ if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_con
                                             'amount': amount_str,
                                             'amount_comma': f"{int(amount_str):,}",
                                             'matched': False,
-                                            'matched_count': 0, # 💡 何枚のレシートを吸収したか数えるカウンター
+                                            'matched_count': 0,
                                             'summary': "未抽出"
                                         })
                         except Exception as e:
@@ -217,7 +224,6 @@ if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_con
                                 
                                 candidates = []
                                 
-                                # 💡【ダブり対応】すでにマッチ済みの明細も候補から外さず、すべて評価する！
                                 for item in statements:
                                     amt_match = amount_exists_in_text(item['amount'], text_norm) or (item['amount'] in largest_amounts)
                                     shop_match = is_shop_match_3chars(item['shop'], text_norm)
@@ -242,9 +248,6 @@ if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_con
                                         is_valid, reason, base_priority = True, "金額＋日付", 10
                                         
                                     if is_valid:
-                                        # 💡 【ペナルティ処理】すでにマッチ済みの明細は優先度を少し下げる（-5点）
-                                        # これにより、未マッチの同額同日明細があればそちらを優先し、
-                                        # なければダブりとして同じ明細に吸収する！
                                         final_priority = base_priority - 5 if item['matched_count'] > 0 else base_priority
                                         candidates.append((final_priority, item, "一致（" + reason + "）"))
                                 
@@ -256,10 +259,10 @@ if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_con
                                     top_priority, top_item, top_reason = candidates[0]
                                     
                                     top_item['matched'] = True
-                                    top_item['matched_count'] += 1 # 吸収した枚数をカウントアップ
+                                    top_item['matched_count'] += 1
                                     
                                     if top_item['matched_count'] > 1:
-                                        top_item['summary'] = f"{top_reason} 【複数枚検知: {top_item['matched_count']}枚】"
+                                        top_item['summary'] = f"{top_reason} 【ダブり吸収: {top_item['matched_count']}枚目】"
                                     else:
                                         top_item['summary'] = top_reason
                                         
@@ -294,7 +297,6 @@ if st.button("🐾 ダブり吸収機能付きで完璧に仕分け！", use_con
                                 out_path = os.path.join(target_dir, new_filename)
                                 
                                 counter = 1
-                                # 💡 すでに同名のファイル（1枚目）がある場合、「_1」「_2」と連番をつけて同じフォルダに共存させます
                                 while os.path.exists(out_path):
                                     new_filename = f"{safe_date}_{matched_info['amount_comma']}円_{counter}.pdf" if matched_card else f"{os.path.splitext(new_filename)[0]}_{counter}.pdf"
                                     out_path = os.path.join(target_dir, new_filename)
